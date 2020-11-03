@@ -10,6 +10,10 @@ Parameters:
     Type: String
     Default: 50
     Description: Instance Volume size.
+  EC2KeyName:
+    Type: String
+    Default: master-of-destruction
+    Description: Key name for root ssh access.    
   DeployPublicKey:
     Type: String
     Description: Deploy public key for deploy user.
@@ -30,7 +34,7 @@ Resources:
           Count: 1
       Properties:
           ImageId: ami-01996625fff6b8fcc
-          KeyName: master-of-destruction
+          KeyName: !Ref EC2KeyName
           InstanceType: !Ref InstanceType
           SecurityGroupIds:
             - !GetAtt EC2SecurityGroup.GroupId
