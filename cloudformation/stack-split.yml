@@ -1,0 +1,278 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: Helsingborg stad Wordpress ready instance with ubuntu.
+
+Parameters:
+  InstanceType:
+    Type: String
+    Default: t3.micro
+    Description: Instance type to use.
+  VolumeSize:
+    Type: String
+    Default: 50
+    Description: Instance Volume size.
+  DeployPublicKey:
+    Type: String
+    Default: ""
+    Description: Deploy public key for deploy user.
+  GithubAccount:
+    Type: String
+    Default: ""
+    Description: Github account containing config files.
+  GithubRepo:
+    Type: String
+    Default: ""
+    Description: Github repo containing config files.
+
+
+Resources:
+  EC2Instance:
+      Type: AWS::EC2::Instance
+      CreationPolicy:
+        ResourceSignal:
+          Timeout: PT15M
+          Count: 1
+      Properties:
+          ImageId: ami-01996625fff6b8fcc
+          KeyName: master-of-destruction
+          InstanceType: !Ref InstanceType
+          SecurityGroupIds:
+            - !GetAtt EC2SecurityGroup.GroupId
+          BlockDeviceMappings:
+            -
+              DeviceName: /dev/sda1
+              Ebs:
+                VolumeSize: !Ref VolumeSize
+          UserData: 
+            Fn::Base64: !Sub |
+              #!/bin/bash -xe
+              apt-get update -y
+              apt-get install -y python-setuptools
+              mkdir -p /opt/aws/bin
+              wget https://s3.amazonaws.com/cloudformation-examples/aws-cfn-bootstrap-latest.tar.gz
+              python -m easy_install --script-dir /opt/aws/bin aws-cfn-bootstrap-latest.tar.gz
+              /opt/aws/bin/cfn-init -v --stack ${AWS::StackName} --resource EC2Instance --configsets full_install --region ${AWS::Region}
+              /opt/aws/bin/cfn-signal -e $? --stack ${AWS::StackName} --resource EC2Instance --region ${AWS::Region}
+      Metadata:
+        AWS::CloudFormation::Init:
+          configSets:
+            full_install:
+              - install_and_enable_cfn_hup
+              - install_apache
+              - config_apache
+              - install_mysql
+              - install_php
+              - install_wp_cli
+              - install_composer
+              - install_redis
+              - install_varnish
+              - config_varnish
+              - install_nginx
+              - config_nginx
+              - add_deploy_user
+              - add_deploy_public_key
+              - chmod_web_folder
+          install_and_enable_cfn_hup:
+            files:
+              /etc/cfn/cfn-hup.conf:
+                content: !Sub |
+                  [main]
+                  stack=${AWS::StackId}
+                  region=${AWS::Reg
+                mode: "000400"
+                owner: root
+                group: root 
+              /etc/cfn/hooks.d/cfn-auto-reloader.conf:
+                content: !Sub |
+                  [cfn-auto-reloader-hook]
+                  triggers=post.update
+                  path=Resources.EC2Instance.Metadata.AWS::CloudFormation::Init
+                  action=/opt/aws/bin/cfn-init -v --stack ${AWS::StackName} --resource EC2Instance --configsets full_install --region ${AWS::Region}
+                  runas=root
+              /lib/systemd/system/cfn-hup.service:
+                content: !Sub |
+                  [Unit]
+                  Description=cfn-hup daemon
+                  [Service]
+                  Type=simple
+                  ExecStart=/opt/aws/bin/cfn-hup
+                  Restart=always
+                  [Install]
+                  WantedBy=multi-user.target
+            commands:
+              01enable_cfn_hup:
+                command: |
+                  systemctl enable cfn-hup.service
+                  systemctl start cfn-hup.service
+
+          install_apache:
+            commands:
+              01install_apache:
+                test: test ! -e /etc/apache2/apache2.conf
+                command: |
+                  apt-get install -y apache2
+
+          config_apache:
+            files:
+              /etc/apache2/ports.conf:
+                source: !Sub https://raw.githubusercontent.com/${GithubAccount}/${GithubRepo}/main/config/apache/ports.conf
+            commands:
+              01enable_modules:
+                command: |
+                  a2enmod headers rewrite expires
+              02restart_apache:
+                command: |
+                  systemctl restart apache2
+
+          install_mysql:
+            commands:
+              01install_mysql:
+                test: test ! -e /etc/mysql/my.cnf
+                command: |
+                  apt-get install -y mysql-server
+
+          install_php:
+            commands:
+              01install_php:
+                test: test ! -e //etc/php/7.2/apache2/php.ini
+                command: |
+                  apt-get install -y php libapache2-mod-php 
+                  systemctl restart apache2
+              02install_php_extensions:
+                command: |
+                  apt-get install -y php-mysql php-curl php-gd php-mbstring php-xml php-xmlrpc php-soap php-intl php-zip php-redis
+                  systemctl restart apache2
+
+          install_wp_cli:
+            commands:
+              01install_wp_cli:
+                test: test ! -e /usr/local/bin/wp
+                command: |
+                  curl -O https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cli.phar
+                  chmod +x wp-cli.phar
+                  mv wp-cli.phar /usr/local/bin/wp
+
+          install_composer:
+            commands:
+              01install_composer:
+                test: test ! -e /usr/local/bin/composer
+                command: |
+                  export COMPOSER_HOME=/root
+                  wget https://getcomposer.org/composer-2.phar
+                  mv composer-2.phar /usr/local/bin/composer
+                  chmod +x /usr/local/bin/composer
+
+          install_redis:
+            commands:
+              01install_redis:
+                test: test ! -e /etc/redis/redis.conf
+                command: |
+                  apt-get install -y redis-server
+ 
+          install_varnish:
+            commands:
+              01install_varnish:
+                test: test ! -e /etc/varnish/
+                command: |
+                  apt-get install -y varnish
+
+          config_varnish:
+            files:
+              /etc/varnish/default.vcl:
+                source: !Sub https://raw.githubusercontent.com/${GithubAccount}/${GithubRepo}/main/config/varnish/default.vcl
+
+            commands:
+              01install_varnish:
+                command: |
+                  service varnish restart
+          install_nginx:
+            commands:
+              01generate_certificate:
+                test: test ! -e /etc/ssl/private/nginx-selfsigned.key
+                command: |
+                  openssl req -x509 -nodes -days 365 -newkey rsa:2048 -keyout /etc/ssl/private/nginx-selfsigned.key -out /etc/ssl/certs/nginx-selfsigned.crt -subj "/C=SE/ST=Skane/L=Helsingborg/O=Helsingborg Stad/CN=beta.helsingborg.se"
+              02install_nginx:
+                test: test ! -e /etc/nginx/nginx.conf
+                command: |
+                  apt-get install -y nginx
+
+          config_nginx:
+            files:
+              /etc/nginx/sites-available/default:
+                source: !Sub https://raw.githubusercontent.com/${GithubAccount}/${GithubRepo}/main/config/nginx/default
+
+            commands:
+              01restart_nginx:
+                command: |
+                  service nginx restart
+
+          add_deploy_user:
+            commands:
+              01add_user:
+                test: test ! -e /home/deploy/.bashrc
+                command: |
+                  adduser --disabled-password --gecos "" deploy
+                  adduser deploy
+                  echo "deploy ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers
+
+          add_deploy_public_key:
+            files:
+              /home/deploy/.ssh/authorized_keys:
+                content: !Sub |
+                  ${DeployPublicKey}
+                mode: "000600"
+                owner: deploy
+                group: deploy
+
+          chmod_web_folder:
+            commands:
+              01chmod_web_folder: 
+                command: |
+                  chown www-data:www-data -R /var/www/html
+                  find /var/www/html -type d -exec chmod 775 {} \;
+                  find /var/www/html -type f -exec chmod 664 {} \;
+
+
+
+  EC2SecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+        GroupDescription: Allow http to client host
+        VpcId: vpc-21399048
+        SecurityGroupIngress:
+          - IpProtocol: tcp
+            FromPort: 22
+            ToPort: 22
+            CidrIp: 0.0.0.0/0
+          - IpProtocol: tcp
+            FromPort: 80
+            ToPort: 80
+            CidrIp: 0.0.0.0/0
+          - IpProtocol: tcp
+            FromPort: 443
+            ToPort: 443
+            CidrIp: 0.0.0.0/0
+        SecurityGroupEgress:
+          - IpProtocol: tcp
+            FromPort: 80
+            ToPort: 80
+            CidrIp: 0.0.0.0/0
+          - IpProtocol: tcp
+            FromPort: 443
+            ToPort: 443
+            CidrIp: 0.0.0.0/0
+  
+
+
+  EC2EIP:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+
+
+
+  EC2EIPAssociation:
+    Type: AWS::EC2::EIPAssociation
+    Properties:
+      InstanceId: !Ref EC2Instance
+      EIP: !Ref EC2EIP
+
