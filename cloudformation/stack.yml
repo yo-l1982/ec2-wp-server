@@ -15,11 +15,9 @@ Parameters:
     Description: Deploy public key for deploy user.
   GithubAccount:
     Type: String
-    Default: "yo-l1982"
     Description: Github account containing config files.
   GithubRepo:
     Type: String
-    Default: "ec2-wp-server"
     Description: Github repo containing config files.
 
 
